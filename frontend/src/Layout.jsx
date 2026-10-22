@@ -1,10 +1,11 @@
 import { useEffect, useState } from "react";
 import { NavLink, Outlet, useLocation, useNavigate } from "react-router-dom";
 import { useAuth } from "./AuthContext";
+import { uiRole } from "./lib/roles";
 import {
   LayoutDashboard, Users, CalendarDays, Stethoscope, Pill, FlaskConical,
   BedDouble, Receipt, ListOrdered, BarChart3, Database, Brain, GitBranch,
-  Columns3, LogOut, ShieldCheck, Menu, X,
+  Columns3, LogOut, ShieldCheck, Menu, X, Layers,
 } from "lucide-react";
 
 const NAV_GROUPS = [
@@ -24,19 +25,26 @@ const NAV_GROUPS = [
   ]},
   { title: "Finance", items: [
     { to: "/billing", label: "Billing & payments", icon: Receipt, roles: ["admin", "billingclerk", "receptionist"] },
-    { to: "/reports", label: "Reports", icon: BarChart3, roles: ["admin", "doctor", "billingclerk"] },
+    { to: "/reports", label: "Reports", icon: BarChart3, roles: ["admin", "doctor", "billingclerk", "readonly"] },
   ]},
   { title: "Reference", items: [
     { to: "/dbms-lab", label: "DBMS concept lab", icon: Database, roles: null },
     { to: "/ml-insights", label: "AI/ML insights", icon: Brain, roles: null },
     { to: "/er-model", label: "ER model", icon: GitBranch, roles: null },
     { to: "/schema-viewer", label: "Schema viewer", icon: Columns3, roles: null },
+    { to: "/normalization", label: "Keys & normalization", icon: Layers, roles: null },
   ]},
 ];
 
+// FIX (v2): the backend returns Oracle-side role names (ADMIN, LAB, PHARMACY,
+// BILLING ...) but NAV_GROUPS uses lower-case UI names ("admin", "labtech",
+// "pharmacist", "billingclerk"). The old canSee() compared them directly, so
+// every role-restricted menu item was hidden for every user - only the
+// Dashboard and Reference pages ever showed up in the sidebar.
 function canSee(item, role) {
   if (!item.roles) return true;
-  return item.roles.includes(role);
+  const r = uiRole(role);
+  return r === "admin" || item.roles.includes(r);
 }
 
 export default function Layout() {

@@ -10,6 +10,11 @@
 
 An enterprise-grade, full-stack **Hospital & Clinical Management System (HCMS)** engineered on **Oracle XE**. Designed with **database-enforced least-privilege security (RBAC)**, robust **PL/SQL business rules, triggers, and procedures**, a **FastAPI multi-pool backend**, a **React 18 + Vite clinical dashboard**, and an **integrated Machine Learning pipeline** for outpatient no-show prediction.
 
+> **v2 update** — realistic seed data (28,310 rows in all 28 tables), fixed RBAC grants, full CRUD screens,
+> 15 SQL reports, live ACID / concurrency / RBAC demos, normalization fixes (DISEASE table, ML registry) and a
+> rebuilt, properly evaluated ML pipeline. See **[CHANGES.md](CHANGES.md)** (what changed and how to run it) and
+> **[docs/DBMS_Report.md](docs/DBMS_Report.md)** (ER model, keys, FDs, normalization, SQL coverage, ML results).
+
 ---
 
 ## 📑 Table of Contents
@@ -32,7 +37,7 @@ An enterprise-grade, full-stack **Hospital & Clinical Management System (HCMS)**
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│                       React 18 + Vite Clinical UI                          │
+│                       React 18 + Vite Clinical UI                           │
 │        (Role-Aware Navigation, Live SQL Panel, DBMS Lab, ER Viewer)         │
 └──────────────────────────────────────┬──────────────────────────────────────┘
                                        │ HTTP / REST (JWT Bearer Token)
@@ -40,7 +45,7 @@ An enterprise-grade, full-stack **Hospital & Clinical Management System (HCMS)**
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │                          FastAPI Web Application                            │
 │  - JWT Authentication & RBAC Role Resolution                                │
-│  - One Dedicated Oracle Connection Pool Per Role (Least Privilege)         │
+│  - One Dedicated Oracle Connection Pool Per Role (Least Privilege)          │
 │  - Parameterized DQL/DML (Strict Bind Variables, SQL Injection Immune)      │
 └──────────────────────────────────────┬──────────────────────────────────────┘
                                        │ python-oracledb (Thin Mode)
@@ -48,9 +53,9 @@ An enterprise-grade, full-stack **Hospital & Clinical Management System (HCMS)**
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │                    Oracle XE Relational Database (XEPDB1)                   │
 │  Schema Owner: HCMS_ADMIN                                                   │
-│  - 26 Normalized Relational Tables (3NF/BCNF)                               │
-│  - 8 Specialized Analytical & Key-Preserved Views                           │
-│  - 25 Sequences, 6 Integrity Triggers, 5 Procedures, 4 Functions, 1 Package │
+│  - 28 Normalized Relational Tables (3NF/BCNF), 28,310 seed rows             │
+│  - 14 Views, 25 explicit Indexes (FK, function-based), 26 Sequences         │
+│  - 14 Triggers, 17 Procedures, 7 Functions, 1 Package                       │
 │  - 8 Role-Specific Database Accounts (doctor1, receptionist1, etc.)         │
 └──────────────────────────────────────┬──────────────────────────────────────┘
                                        ▲ Batch Pipeline Read/Write
@@ -58,8 +63,8 @@ An enterprise-grade, full-stack **Hospital & Clinical Management System (HCMS)**
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │                      Scikit-Learn ML Subsystem                              │
 │  - Extracts resolved appointment history directly from Oracle               │
-│  - Trains Logistic Regression vs. Random Forest (Class-Weighted)            │
-│  - Persists optimal model (`no_show_model.joblib`)                          │
+│  - Features computed in SQL; Dummy vs LogReg vs RF vs Gradient Boosting     │
+│  - 5-fold CV + out-of-time test; run registered in `ML_MODEL_RUN`           │
 │  - Scores upcoming appointments via SQL MERGE into `ML_PREDICTION`          │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
@@ -85,7 +90,7 @@ An enterprise-grade, full-stack **Hospital & Clinical Management System (HCMS)**
 
 ## 🗄 Database Schema & Objects
 
-The relational core comprises **26 normalized tables** (all partitioned in the `HCMS_ADMIN` schema), **8 views**, **25 sequences**, **6 compound/statement triggers**, **5 stored procedures**, **4 standalone functions**, and **1 clinical package**.
+The relational core comprises **28 normalized tables** in the `HCMS_ADMIN` schema, **14 views**, **26 sequences**, **14 triggers** (incl. one compound trigger), **17 stored procedures**, **7 functions**, and **1 clinical package**. Keys, functional dependencies and the normal form of every table are in [docs/DBMS_Report.md](docs/DBMS_Report.md) and on the *Keys & normalization* page.
 
 ### 1. Functional Table Breakdown
 
@@ -93,10 +98,10 @@ The relational core comprises **26 normalized tables** (all partitioned in the `
 | :--- | :--- | :--- |
 | **Administration** | `department`, `doctor`, `nurse`, `staff_schedule`, `room_bed` | Hospital departments, physician registries, nursing rosters, and bed occupancy tracking. |
 | **Patient Care** | `patient`, `appointment`, `admission`, `service_queue` | Master patient demographics, scheduling, in-patient admissions, and FIFO/emergency service queues. |
-| **Clinical** | `symptom`, `diagnosis`, `diagnosis_symptom`, `vital_sign`, `clinical_note` | Clinical encounters, ICD-10 diagnosis codes, timestamped vitals, and physician notes. |
+| **Clinical** | `symptom`, `disease`, `diagnosis`, `diagnosis_symptom`, `vital_sign`, `clinical_note` | Clinical encounters, ICD-10 diagnosis codes, timestamped vitals, and physician notes. |
 | **Diagnostics & Rx** | `lab_test_catalog`, `lab_order`, `medicine`, `prescription`, `prescription_item` | Laboratory order lifecycles, test catalog prices, medicine inventory, and itemized prescriptions. |
 | **Billing & Finance** | `insurance_policy`, `bill`, `bill_item`, `payment` | Itemized invoicing, automatic copay calculations, and multi-mode payment tracking. |
-| **System & AI** | `app_user`, `audit_log`, `ml_prediction` | Application account mapping, clinical change audit trail, and ML prediction scores. |
+| **System & AI** | `app_user`, `audit_log`, `ml_model_run`, `ml_prediction` | Application account mapping, clinical change audit trail, and ML prediction scores. |
 
 ### 2. Analytical & Reporting Views
 
@@ -340,13 +345,21 @@ In another terminal window:
 ```
 The React + Vite application will launch at **`http://localhost:5173`**.
 
-### Step 5: (Optional) Run the Machine Learning Pipeline
+### Step 5: Run the Machine Learning Pipeline
 
-In a separate terminal window:
+In a separate terminal window (after Step 2):
 ```powershell
-.\4_run_ml.ps1
+.\4_run_ml.ps1                 # retrain: compares 4 models, registers the best in ML_MODEL_RUN, scores upcoming visits
+.\4_run_ml.ps1 --predict-only  # just re-score with the saved model
 ```
-This trains the Logistic Regression & Random Forest models, selects the top performer, saves `no_show_model.joblib`, and scores upcoming appointments into Oracle.
+(Logged in as `admin1` you can also press **Retrain model** on the *AI/ML insights* page.)
+
+### Step 6 (optional): Re-seed only the data
+
+```powershell
+.\5_reseed_data.ps1            # wipes and reloads 04_sample_data.sql, keeps schema/users/grants
+```
+The seed data is relative to the install week, so re-seeding after a few weeks makes "today" and "upcoming" fresh again.
 
 ---
 

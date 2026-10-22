@@ -17,6 +17,7 @@ import DbmsLabPage from "./pages/DbmsLabPage";
 import MlInsightsPage from "./pages/MlInsightsPage";
 import ErModelPage from "./pages/ErModelPage";
 import SchemaViewerPage from "./pages/SchemaViewerPage";
+import NormalizationPage from "./pages/NormalizationPage";
 
 function RequireAuth({ children }) {
   const { auth } = useAuth();
@@ -46,6 +47,7 @@ export default function App() {
               <Route path="/ml-insights" element={<MlInsightsPage />} />
               <Route path="/er-model" element={<ErModelPage />} />
               <Route path="/schema-viewer" element={<SchemaViewerPage />} />
+              <Route path="/normalization" element={<NormalizationPage />} />
               <Route path="*" element={<Navigate to="/" replace />} />
             </Route>
           </Routes>

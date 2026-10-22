@@ -1,82 +1,129 @@
 # ml/train.py
-# Phase 15.4 (feature engineering) + 15.5 (training).
+# ---------------------------------------------------------------------------
+# Pre-processing + model training for the appointment NO-SHOW classifier.
 #
-# Class imbalance note: with a ~12% no-show rate (see 04_sample_data.sql /
-# 04b_bulk_data.sql), plain accuracy is misleading (predicting "always
-# attends" scores ~88% accuracy while catching zero no-shows) — this is
-# why evaluate.py leads with recall/F1/ROC-AUC, not accuracy.
-
+# Design decisions (each one is a likely viva question):
+#
+# 1. Out-of-time test split, not a random split.
+#    Rows are ordered by appt_date; the most recent 20 % become the test
+#    set. The model is always evaluated on appointments that happened AFTER
+#    everything it was trained on - exactly how it is used in production
+#    (score next week's appointments using last year's history). A random
+#    split would leak "future" behaviour into training and inflate scores.
+#
+# 2. Pre-processing lives INSIDE an sklearn Pipeline (ColumnTransformer):
+#      numeric      -> median imputation + StandardScaler
+#      binary flags -> passed through (already 0/1)
+#      categorical  -> one-hot encoding (department, weekday, gender)
+#    department_id used to be fed in as a NUMBER (1..8), which wrongly told
+#    the model that "Pediatrics (4) > Cardiology (2)". One-hot fixes that.
+#    Because the scaler/encoder are fitted inside the pipeline, they are
+#    fitted on the training folds only (no leakage), and the saved .joblib
+#    contains the full transform + model in one object.
+#
+# 3. Candidate models: a Dummy baseline (always predicts the base rate -
+#    anything that cannot beat it is useless), Logistic Regression
+#    (interpretable, linear), Random Forest and Histogram Gradient Boosting
+#    (non-linear, interactions, e.g. "long lead time AND no insurance").
+#
+# 4. Model selection by 5-fold stratified cross-validated ROC-AUC on the
+#    training period (PR-AUC as tie-breaker). The old code picked the model
+#    with the highest RECALL, which rewards a useless model that predicts
+#    NO_SHOW for everyone (recall = 1.0).
+#
+# 5. Class imbalance (~17 % no-shows) is handled by THRESHOLD MOVING, not
+#    by class re-weighting: models are trained on the natural distribution
+#    (so predicted probabilities stay calibrated and can be shown to staff
+#    as "37 % risk"), then the decision threshold is chosen on
+#    out-of-fold TRAINING predictions to maximise F1 for the NO_SHOW class.
+#    The default 0.5 threshold would flag almost nobody, because a 17 %
+#    event rarely gets a probability above 0.5. (Use beta=2 in
+#    best_threshold() if the clinic prefers catching more no-shows at the
+#    cost of more reminder calls.)
+# ---------------------------------------------------------------------------
+import numpy as np
 import pandas as pd
-from sklearn.model_selection import train_test_split
-from sklearn.preprocessing import StandardScaler
+from sklearn.compose import ColumnTransformer
+from sklearn.dummy import DummyClassifier
+from sklearn.ensemble import HistGradientBoostingClassifier, RandomForestClassifier
+from sklearn.impute import SimpleImputer
 from sklearn.linear_model import LogisticRegression
-from sklearn.ensemble import RandomForestClassifier
+from sklearn.model_selection import StratifiedKFold, cross_val_predict
+from sklearn.metrics import average_precision_score, fbeta_score, roc_auc_score
+from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import OneHotEncoder, StandardScaler
+
+from features import ALL_FEATURES, BINARY_FEATURES, CATEGORICAL_FEATURES, NUMERIC_FEATURES
+
+RANDOM_STATE = 42
 
 
-def prepare_features(df: pd.DataFrame):
-    df = df.copy()
-    # Normalize column names to lowercase
-    df.columns = [str(c).lower() for c in df.columns]
-
-    # Handle appointment weekday
-    df["appt_weekday"] = pd.to_datetime(df["appt_date"], errors="coerce").dt.dayofweek.fillna(0).astype(int)
-
-    # Safely convert numeric fields
-    prior_appts = pd.to_numeric(df.get("prior_appt_count", 0), errors="coerce").fillna(0)
-    prior_no_shows = pd.to_numeric(df.get("prior_no_show_count", 0), errors="coerce").fillna(0)
-    df["prior_appt_count"] = prior_appts
-    df["prior_no_show_count"] = prior_no_shows
-    df["prior_no_show_rate"] = prior_no_shows / prior_appts.replace(0, 1)
-    df["is_new_patient"] = (prior_appts == 0).astype(int)
-    
-    appt_types = df.get("appt_type", "").astype(str).str.upper()
-    df["appt_type_new"] = (appt_types == "NEW").astype(int)
-
-    df["patient_age"] = pd.to_numeric(df.get("patient_age", 30), errors="coerce").fillna(30).clip(lower=0)
-    df["lead_time_days"] = pd.to_numeric(df.get("lead_time_days", 0), errors="coerce").fillna(0).clip(lower=0)
-    df["department_id"] = pd.to_numeric(df.get("department_id", 1), errors="coerce").fillna(1).astype(int)
-
-    if "status" in df.columns:
-        df["label"] = (df["status"].astype(str).str.upper() == "NO_SHOW").astype(int)
-    else:
-        df["label"] = 0
-
-    feature_cols = ["patient_age", "prior_appt_count", "prior_no_show_rate",
-                     "is_new_patient", "appt_type_new", "appt_weekday",
-                     "lead_time_days", "department_id"]
-    X = df[feature_cols].fillna(0)
-    y = df["label"]
-    return X, y, feature_cols
+def make_preprocessor():
+    try:
+        ohe = OneHotEncoder(handle_unknown="ignore", sparse_output=False)
+    except TypeError:  # scikit-learn < 1.2
+        ohe = OneHotEncoder(handle_unknown="ignore", sparse=False)
+    return ColumnTransformer([
+        ("num", Pipeline([("impute", SimpleImputer(strategy="median")), ("scale", StandardScaler())]), NUMERIC_FEATURES),
+        ("bin", "passthrough", BINARY_FEATURES),
+        ("cat", ohe, CATEGORICAL_FEATURES),
+    ])
 
 
-def split_and_scale(X, y):
-    has_both_classes = (y.nunique() > 1) and (y.value_counts().min() >= 2) and (len(y) >= 5)
-    stratify = y if has_both_classes else None
-    test_size = 0.2 if len(y) >= 10 else 0.25
-    X_train, X_test, y_train, y_test = train_test_split(
-        X, y, test_size=test_size, random_state=42, stratify=stratify
-    )
-    scaler = StandardScaler().fit(X_train)
-    return scaler.transform(X_train), scaler.transform(X_test), y_train, y_test, scaler
+def candidate_models():
+    return {
+        "baseline_dummy": DummyClassifier(strategy="prior"),
+        "logistic_regression": LogisticRegression(C=0.5, max_iter=2000),
+        "random_forest": RandomForestClassifier(n_estimators=400, min_samples_leaf=8, max_features="sqrt",
+                                                n_jobs=-1, random_state=RANDOM_STATE),
+        "gradient_boosting": HistGradientBoostingClassifier(learning_rate=0.05, max_depth=3, max_iter=250,
+                                                            l2_regularization=1.0, random_state=RANDOM_STATE),
+    }
 
 
-def train_models(X_train, y_train):
-    log_reg = LogisticRegression(class_weight="balanced", max_iter=1000, random_state=42)
-    log_reg.fit(X_train, y_train)
-
-    rf = RandomForestClassifier(n_estimators=200, max_depth=6, class_weight="balanced", random_state=42)
-    rf.fit(X_train, y_train)
-
-    return {"logistic_regression": log_reg, "random_forest": rf}
+def make_pipeline(model):
+    return Pipeline([("prep", make_preprocessor()), ("model", model)])
 
 
-if __name__ == "__main__":
-    import oracledb
-    from extract import extract_training_data
+def temporal_split(df: pd.DataFrame, test_fraction=0.2):
+    """Oldest 80 % -> train, most recent 20 % -> test (out-of-time)."""
+    df = df.sort_values(["appt_date", "appointment_id"]).reset_index(drop=True)
+    cut = int(len(df) * (1 - test_fraction))
+    return df.iloc[:cut].copy(), df.iloc[cut:].copy()
 
-    conn = oracledb.connect(user="hcms_admin", password="...", dsn="localhost/XEPDB1")
-    df = extract_training_data(conn)
-    X, y, feature_cols = prepare_features(df)
-    X_train, X_test, y_train, y_test, scaler = split_and_scale(X, y)
-    models = train_models(X_train, y_train)
-    print("Trained:", list(models.keys()))
+
+def best_threshold(y_true, proba, beta=1.0):
+    """Threshold that maximises F-beta on out-of-fold predictions."""
+    grid = np.round(np.arange(0.05, 0.80, 0.01), 2)
+    scores = [fbeta_score(y_true, (proba >= t).astype(int), beta=beta, zero_division=0) for t in grid]
+    i = int(np.argmax(scores))
+    return float(grid[i]), float(scores[i])
+
+
+def cross_validate_candidates(train_df: pd.DataFrame, verbose=True):
+    """5-fold stratified CV on the training period for every candidate."""
+    X, y = train_df[ALL_FEATURES], train_df["label"].values
+    cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=RANDOM_STATE)
+    results = {}
+    for name, model in candidate_models().items():
+        pipe = make_pipeline(model)
+        oof = cross_val_predict(pipe, X, y, cv=cv, method="predict_proba")[:, 1]
+        auc = float(roc_auc_score(y, oof)) if len(np.unique(y)) > 1 else 0.5
+        ap = float(average_precision_score(y, oof))
+        thr, f2 = best_threshold(y, oof)
+        results[name] = {"cv_roc_auc": auc, "cv_pr_auc": ap, "threshold": thr, "cv_f1": f2, "oof": oof}
+        if verbose:
+            print(f"  CV {name:20s} ROC-AUC={auc:.3f}  PR-AUC={ap:.3f}  best-F1 threshold={thr:.2f} (F1={f2:.3f})")
+    return results
+
+
+def select_model(cv_results):
+    """Highest CV ROC-AUC, PR-AUC as tie-breaker. The dummy can never win
+    unless every real model is worse than chance."""
+    return max(cv_results, key=lambda n: (round(cv_results[n]["cv_roc_auc"], 3), cv_results[n]["cv_pr_auc"]))
+
+
+def fit_final(name, train_df):
+    pipe = make_pipeline(candidate_models()[name])
+    pipe.fit(train_df[ALL_FEATURES], train_df["label"].values)
+    return pipe

@@ -8,7 +8,7 @@ import SqlPanel from "../components/SqlPanel";
 import EcgLine from "../components/EcgLine";
 import {
   Users, CalendarDays, ListOrdered, BedDouble, FlaskConical, Receipt,
-  RefreshCw, ArrowRight, Activity,
+  RefreshCw, ArrowRight, Activity, Brain, GitBranch, Columns3, Database, Layers, BarChart3, AlertTriangle,
 } from "lucide-react";
 
 const CARDS = [
@@ -17,7 +17,18 @@ const CARDS = [
   { key: "current_queue", label: "Currently waiting", icon: ListOrdered, tone: "warn" },
   { key: "available_beds", label: "Available beds", icon: BedDouble, tone: "ok" },
   { key: "pending_labs", label: "Pending lab reports", icon: FlaskConical, tone: "warn" },
-  { key: "revenue_today", label: "Revenue today", icon: Receipt, tone: "", money: true },
+  { key: "revenue_7_days", label: "Collected (last 7 days)", icon: Receipt, tone: "", money: true },
+  { key: "high_risk_upcoming", label: "High no-show risk (ML)", icon: Brain, tone: "warn" },
+  { key: "outstanding_amount", label: "Outstanding bills", icon: AlertTriangle, tone: "warn", money: true },
+];
+
+const EXPLORE = [
+  ["/er-model", "ER model", "Entities, relationships, cardinalities", GitBranch],
+  ["/schema-viewer", "Database schema", "Tables, columns, keys, views, triggers - live from Oracle", Columns3],
+  ["/normalization", "Keys & normalization", "Candidate keys, FDs, 1NF → BCNF", Layers],
+  ["/dbms-lab", "DBMS concept lab", "SQL console, joins, sub-queries, ACID demos, RBAC matrix", Database],
+  ["/reports", "Reports", "15 SQL reports with charts, CSV and print", BarChart3],
+  ["/ml-insights", "AI/ML insights", "No-show prediction, evaluation, live scoring", Brain],
 ];
 
 export default function DashboardPage() {
@@ -59,7 +70,7 @@ export default function DashboardPage() {
 
       {error && <p className="text-urgent mb-4">{error}</p>}
 
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 mb-7">
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-7">
         {CARDS.map(({ key, label, icon: Icon, tone, money }) => (
           <div
             key={key}
@@ -87,6 +98,25 @@ export default function DashboardPage() {
       <div className="bg-surface border border-border rounded-xl p-5 mb-6 shadow-sm">
         <div className="flex justify-between items-center mb-4 pb-3 border-b border-border">
           <h2 className="text-lg font-display m-0 flex items-center gap-2">
+            <Database size={18} className="text-accent" /> Explore the database
+          </h2>
+        </div>
+        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+          {EXPLORE.map(([to, title, text, Icon]) => (
+            <Link key={to} to={to} className="group flex gap-3 items-start border border-border rounded-lg p-3.5 hover:border-accent hover:bg-accent-soft/50 transition-colors">
+              <span className="w-9 h-9 shrink-0 rounded-lg bg-accent-soft text-accent-strong flex items-center justify-center"><Icon size={18} /></span>
+              <span>
+                <span className="block text-sm font-semibold text-ink group-hover:text-accent-strong">{title}</span>
+                <span className="block text-xs text-ink-muted mt-0.5">{text}</span>
+              </span>
+            </Link>
+          ))}
+        </div>
+      </div>
+
+      <div className="bg-surface border border-border rounded-xl p-5 mb-6 shadow-sm">
+        <div className="flex justify-between items-center mb-4 pb-3 border-b border-border">
+          <h2 className="text-lg font-display m-0 flex items-center gap-2">
             <Activity size={18} className="text-accent" /> Quick actions
           </h2>
         </div>
@@ -104,7 +134,7 @@ export default function DashboardPage() {
         </div>
       </div>
 
-      {data && <SqlPanel sql={data.sql_executed} />}
+      {data && <SqlPanel sql={data.sql_executed} meta={data} />}
     </div>
   );
 }
