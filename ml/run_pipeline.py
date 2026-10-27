@@ -120,9 +120,10 @@ def register_run(conn, bundle):
     cur = conn.cursor()
     run_id = cur.var(int)
     import oracledb
-    cur.setinputsizes(js=oracledb.DB_TYPE_CLOB)   # JSON report can exceed 4000 bytes
     try:
         cur.execute("UPDATE ml_model_run SET is_active = 'N' WHERE is_active = 'Y'")
+        # setinputsizes applies to the NEXT execute only, so it must come right before the INSERT
+        cur.setinputsizes(js=oracledb.DB_TYPE_CLOB)   # JSON report can exceed 4000 bytes
         cur.execute("""
             INSERT INTO ml_model_run (model_name, model_version, train_rows, test_rows,
                    train_from, train_to, test_from, test_to, threshold, roc_auc, pr_auc,

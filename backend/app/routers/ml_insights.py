@@ -79,7 +79,11 @@ def model_summary(conn=Depends(get_readonly_connection)):
                 "message": "No active model registered in ML_MODEL_RUN. Run 4_run_ml.ps1 "
                            "(python ml/run_pipeline.py) - or press 'Retrain' as admin1."}
     row = res["results"][0]
-    report = json.loads(row.pop("metrics_json") or "{}")
+    raw = row.pop("metrics_json") or "{}"
+    # newer oracledb versions return an "IS JSON" column already parsed as a dict
+    if hasattr(raw, "read"):
+        raw = raw.read()
+    report = raw if isinstance(raw, (dict, list)) else json.loads(raw)
     return {"available": True, "run": row, "report": report, "sql_executed": res["sql_executed"],
             "features": (_cache["bundle"] or {}).get("features") if _cache["bundle"] else None}
 
